@@ -12,14 +12,22 @@ from campbot.transcript import parse_vtt
 if TYPE_CHECKING:
     from campbot.brain import Brain
     from campbot.config import BotConfig
+    from campbot.persona import Persona
     from campbot.session import SessionManager
 
 logger = logging.getLogger(__name__)
 
+# Module-level persona reference, set by register_handlers
+_persona: Persona | None = None
+
 
 async def safe_post(client, config: BotConfig, text: str) -> None:
     """Post a message only to the bot channel. All writes go through here."""
-    await client.chat_postMessage(channel=config.bot_channel_id, text=text)
+    kwargs: dict = {"channel": config.bot_channel_id, "text": text}
+    if _persona:
+        kwargs["username"] = _persona.name
+        kwargs["icon_emoji"] = _persona.avatar_emoji
+    await client.chat_postMessage(**kwargs)
 
 
 def create_slack_app(config: BotConfig) -> AsyncApp:
@@ -35,6 +43,9 @@ def register_handlers(
     config: BotConfig,
 ) -> None:
     """Register all Slack event handlers."""
+    global _persona
+    _persona = brain.persona
+
     # Track our own bot_id to ignore self-messages
     _self_bot_id: str | None = None
 

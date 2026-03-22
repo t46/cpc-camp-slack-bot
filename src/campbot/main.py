@@ -11,7 +11,7 @@ from campbot.brain import Brain
 from campbot.config import BotConfig
 from campbot.persona import load_persona
 from campbot.session import SessionManager
-from campbot.slack_app import create_slack_app, register_handlers
+from campbot.slack_app import create_slack_app, register_handlers, safe_post
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,10 +58,7 @@ async def periodic_response(
 
         if comment:
             try:
-                await app.client.chat_postMessage(
-                    channel=config.bot_channel_id,
-                    text=comment,
-                )
+                await safe_post(app.client, config, comment)
                 session_mgr.current_session.last_bot_post_at = datetime.now()
                 session_mgr.record_api_call()
                 logger.info("Posted comment to bot channel")
@@ -100,10 +97,7 @@ async def spontaneous_posting(
 
         if comment:
             try:
-                await app.client.chat_postMessage(
-                    channel=config.bot_channel_id,
-                    text=comment,
-                )
+                await safe_post(app.client, config, comment)
                 session_mgr.record_spontaneous_post()
                 logger.info("Posted spontaneous topic to bot channel")
             except Exception:
