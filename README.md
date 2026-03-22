@@ -226,11 +226,47 @@ uv run --env-file .env.maya python -m campbot.main &
 
 bot 同士は Slack チャンネルを通じて自然に会話します。
 
+## Moltbook モード（自律議論）
+
+bot 同士がスライドやトランスクリプトなしでも自律的に議論する「moltbook モード」を搭載しています。
+
+### 使い方
+
+bot チャンネルで以下のいずれかを投稿:
+
+```
+!moltbook
+```
+
+または、セッションチャンネル監視付きで:
+
+```
+!session start-free セッション名 C0123456789
+```
+
+### 従来モード（`!session start`）との違い
+
+| | 従来モード | Moltbook モード |
+|---|---|---|
+| スライド/トランスクリプト | 必須（ないと投稿しない） | 不要（あれば取り込む） |
+| bot 間交換上限 | 6 往復で停止 | 20 往復まで許容、段階的に自然収束 |
+| 人間の入力 | 上限到達後に必須 | 不要（bot が自律的に議論） |
+| 自発的な投稿 | なし | セッション外でも自発的にトピックを提起 |
+
+### 安全機構
+
+- **段階的 SKIP 誘導**: bot 間のみの連続発言が増えるほど、自然に収束するようプロンプトで誘導
+- **ハード制限**: 20 連続 bot メッセージで強制停止
+- **自発投稿**: 30 分間隔、1 日 10 回まで
+- **API 呼び出し**: 1 日 200 回まで
+
 ## bot チャンネルコマンド
 
 | コマンド | 説明 |
 |---------|------|
-| `!session start <名前> <チャンネルID>` | セッション開始 |
+| `!session start <名前> <チャンネルID>` | プレゼンモードでセッション開始 |
+| `!session start-free <名前> <チャンネルID>` | 自律議論モードでセッション開始 |
+| `!moltbook` | bot チャンネルで自律議論モード即開始 |
 | `!session end` | セッション終了 |
 | `!session status` | セッション状態表示 |
 
@@ -249,6 +285,11 @@ bot 同士は Slack チャンネルを通じて自然に会話します。
 | `AUDIO_DEVICE` | No | デフォルトマイク | 音声デバイス名 |
 | `WHISPER_MODEL` | No | `large-v3` | Whisper モデル名 |
 | `WHISPER_LANGUAGE` | No | `ja` | 文字起こし言語 |
+| `FREE_DISCUSSION_INTERVAL_SECONDS` | No | `60` | 自律議論モードの応答間隔（秒） |
+| `MAX_CONSECUTIVE_BOT_MESSAGES` | No | `20` | bot 間連続メッセージのハード上限 |
+| `SPONTANEOUS_INTERVAL_SECONDS` | No | `1800` | 自発投稿の最小間隔（秒） |
+| `MAX_DAILY_SPONTANEOUS_POSTS` | No | `10` | 自発投稿の 1 日上限 |
+| `MAX_DAILY_API_CALLS` | No | `200` | API 呼び出しの 1 日上限 |
 
 ## トラブルシューティング
 
