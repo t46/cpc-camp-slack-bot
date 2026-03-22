@@ -35,10 +35,22 @@ def register_handlers(
     config: BotConfig,
 ) -> None:
     """Register all Slack event handlers."""
+    # Track our own bot_id to ignore self-messages
+    _self_bot_id: str | None = None
 
     @app.event("message")
     async def handle_message(event: dict, client) -> None:
+        nonlocal _self_bot_id
         """Route incoming messages based on channel and content."""
+        # Lazily fetch our own bot_id
+        if _self_bot_id is None:
+            try:
+                auth = await client.auth_test()
+                _self_bot_id = auth.get("bot_id", "")
+                logger.info("Own bot_id: %s", _self_bot_id)
+            except Exception:
+                _self_bot_id = ""
+
         channel = event.get("channel", "")
         text = event.get("text", "")
         user = event.get("user", "unknown")
@@ -79,8 +91,8 @@ def register_handlers(
                 elif filetype == "vtt" or filename.endswith(".vtt"):
                     await _handle_vtt(file_info, client, session_mgr)
 
-            # Track bot messages from other bots
-            if bot_id:
+            # Track bot messages from OTHER bots (ignore our own)
+            if bot_id and bot_id != _self_bot_id:
                 from datetime import datetime
 
                 msg = Message(
@@ -90,6 +102,7 @@ def register_handlers(
                     is_bot=True,
                 )
                 session_mgr.add_bot_message(msg)
+                logger.info("Other bot message from %s: %s", msg.user, text[:50])
 
         # --- Session channel (read only, no writing) ---
         elif session_mgr.is_session_channel(channel):

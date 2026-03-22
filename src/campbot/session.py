@@ -116,6 +116,23 @@ class SessionManager:
         if session.last_bot_post_at is None:
             return len(session.transcript_chunks) >= 3 or len(session.slide_texts) > 0
 
+        # Check if bot-only discussion has gone on too long (3 round-trips = 6 messages)
+        # Look at the tail of bot_messages: if the last 6+ messages are all bots
+        # with no human discussion or transcript in between, stop until new input arrives
+        max_bot_exchanges = 6
+        if len(session.bot_messages) >= max_bot_exchanges:
+            recent_bot = session.bot_messages[-max_bot_exchanges:]
+            oldest_bot_ts = recent_bot[0].timestamp
+            # Any human messages or transcript since the oldest of those bot messages?
+            has_human_input = any(
+                m.timestamp > oldest_bot_ts for m in session.discussion_messages
+            ) or any(
+                c.timestamp > oldest_bot_ts for c in session.transcript_chunks
+            )
+            if not has_human_input:
+                logger.debug("Bot exchange limit reached (%d), waiting for new input", max_bot_exchanges)
+                return False
+
         # Count new content since last post
         new_chunks = [
             c for c in session.transcript_chunks

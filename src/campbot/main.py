@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime
 
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -27,12 +28,18 @@ async def periodic_response(
     config: BotConfig,
 ) -> None:
     """Periodically generate and post comments."""
+    # Random initial delay (0-60s) to stagger multiple bots
+    initial_delay = random.uniform(0, 60)
     logger.info(
-        "Periodic response task started (interval=%ds)",
+        "Periodic response task started (interval=%ds, initial_delay=%.0fs)",
         config.response_interval_seconds,
+        initial_delay,
     )
+    await asyncio.sleep(initial_delay)
     while True:
-        await asyncio.sleep(config.response_interval_seconds)
+        # Add jitter (±30s) to avoid synchronized posting
+        jitter = random.uniform(-30, 30)
+        await asyncio.sleep(config.response_interval_seconds + jitter)
 
         if not session_mgr.current_session:
             continue
