@@ -35,7 +35,7 @@ class Brain:
         try:
             response = await self.client.messages.create(
                 model=self.config.model_name,
-                max_tokens=512,
+                max_tokens=768,
                 system=self.persona.system_prompt,
                 messages=[{"role": "user", "content": context}],
             )
@@ -47,6 +47,42 @@ class Brain:
 
             logger.info(
                 "Generated comment (%s): %s",
+                self.persona.name,
+                text[:80],
+            )
+            return text
+
+        except anthropic.APIError:
+            logger.exception("Claude API error")
+            return None
+
+    async def generate_spontaneous_topic(self, context: str) -> str | None:
+        """Generate a spontaneous topic for moltbook mode.
+
+        Args:
+            context: The assembled context string from SessionManager.
+
+        Returns:
+            Topic text, or None if nothing worth saying.
+        """
+        if not context.strip():
+            return None
+
+        try:
+            response = await self.client.messages.create(
+                model=self.config.model_name,
+                max_tokens=768,
+                system=self.persona.system_prompt,
+                messages=[{"role": "user", "content": context}],
+            )
+            text = response.content[0].text.strip()
+
+            if text == "SKIP":
+                logger.debug("Brain decided to SKIP")
+                return None
+
+            logger.info(
+                "Generated spontaneous topic (%s): %s",
                 self.persona.name,
                 text[:80],
             )

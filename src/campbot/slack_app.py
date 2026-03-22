@@ -66,6 +66,10 @@ def register_handlers(
         # --- Bot channel ---
         if channel == config.bot_channel_id:
             # Session management commands
+            if text.startswith("!session start-free "):
+                await _handle_session_start_free(text, client, config, session_mgr)
+                return
+
             if text.startswith("!session start "):
                 await _handle_session_start(text, client, config, session_mgr)
                 return
@@ -77,6 +81,11 @@ def register_handlers(
 
             if text.strip() == "!session status":
                 await _handle_session_status(client, config, session_mgr)
+                return
+
+            if text.strip() == "!moltbook":
+                session_mgr.start_session("moltbook", config.bot_channel_id, mode="free")
+                await safe_post(client, config, "Moltbook モードを開始しました。自由に議論します。")
                 return
 
             # File attachments (PDF, VTT)
@@ -102,7 +111,20 @@ def register_handlers(
                     is_bot=True,
                 )
                 session_mgr.add_bot_message(msg)
+                session_mgr.add_channel_message(msg)
                 logger.info("Other bot message from %s: %s", msg.user, text[:50])
+
+            # Track all bot channel messages for spontaneous context
+            if not bot_id and not text.startswith("!"):
+                from datetime import datetime
+
+                msg = Message(
+                    user=user,
+                    text=text,
+                    timestamp=datetime.fromtimestamp(float(ts)) if ts else datetime.now(),
+                    is_bot=False,
+                )
+                session_mgr.add_channel_message(msg)
 
         # --- Session channel (read only, no writing) ---
         elif session_mgr.is_session_channel(channel):
@@ -147,6 +169,35 @@ async def _handle_session_start(
     )
 
 
+async def _handle_session_start_free(
+    text: str,
+    client,
+    config: BotConfig,
+    session_mgr: SessionManager,
+) -> None:
+    """Handle !session start-free <name> <channel_id> command."""
+    parts = text.split(maxsplit=3)
+    if len(parts) < 4:
+        await safe_post(
+            client,
+            config,
+            "使い方: `!session start-free <セッション名> <チャンネルID>`\n"
+            "例: `!session start-free 自由議論 C0123456789`",
+        )
+        return
+
+    session_name = parts[2]
+    session_channel = parts[3].strip().strip("<>#")
+
+    session_mgr.start_session(session_name, session_channel, mode="free")
+    await safe_post(
+        client,
+        config,
+        f"フリーセッション「{session_name}」を開始しました（自律議論モード）。\n"
+        f"チャンネル: <#{session_channel}> を監視中。",
+    )
+
+
 async def _handle_session_status(
     client,
     config: BotConfig,
@@ -162,6 +213,7 @@ async def _handle_session_status(
         client,
         config,
         f"*セッション: {session.name}*\n"
+        f"モード: {session.mode}\n"
         f"チャンネル: <#{session.channel_id}>\n"
         f"スライド: {len(session.slide_texts)} ページ\n"
         f"トランスクリプト: {len(session.transcript_chunks)} チャンク\n"

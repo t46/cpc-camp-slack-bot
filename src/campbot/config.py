@@ -17,5 +17,10 @@ class BotConfig(BaseSettings):
     audio_device: str | None = None
     whisper_model: str = "large-v3"
     whisper_language: str = "ja"
+    free_discussion_interval_seconds: int = 60
+    max_consecutive_bot_messages: int = 20
+    spontaneous_interval_seconds: int = 1800  # 30 minutes
+    max_daily_spontaneous_posts: int = 10
+    max_daily_api_calls: int = 200
 
     model_config = {"env_file": ".env", "extra": "ignore"}

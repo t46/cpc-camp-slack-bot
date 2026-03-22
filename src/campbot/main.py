@@ -39,7 +39,12 @@ async def periodic_response(
     while True:
         # Add jitter (±30s) to avoid synchronized posting
         jitter = random.uniform(-30, 30)
-        await asyncio.sleep(config.response_interval_seconds + jitter)
+        # Use shorter interval for free discussion mode
+        if session_mgr.current_session and session_mgr.current_session.mode == "free":
+            interval = config.free_discussion_interval_seconds
+        else:
+            interval = config.response_interval_seconds
+        await asyncio.sleep(interval + jitter)
 
         if not session_mgr.current_session:
             continue
@@ -58,9 +63,51 @@ async def periodic_response(
                     text=comment,
                 )
                 session_mgr.current_session.last_bot_post_at = datetime.now()
+                session_mgr.record_api_call()
                 logger.info("Posted comment to bot channel")
             except Exception:
                 logger.exception("Failed to post comment")
+
+
+async def spontaneous_posting(
+    app,
+    session_mgr: SessionManager,
+    brain: Brain,
+    config: BotConfig,
+) -> None:
+    """Periodically generate spontaneous topics even without a session."""
+    initial_delay = random.uniform(60, 180)
+    logger.info("Spontaneous posting task started (interval=%ds)", config.spontaneous_interval_seconds)
+    await asyncio.sleep(initial_delay)
+    while True:
+        jitter = random.uniform(-300, 300)
+        await asyncio.sleep(max(60, config.spontaneous_interval_seconds + jitter))
+
+        # Skip if presentation session is active (let reactive handle it)
+        if session_mgr.current_session and session_mgr.current_session.mode == "presentation":
+            continue
+
+        if not session_mgr.has_spontaneous_opportunity(config):
+            continue
+
+        if not session_mgr.can_make_api_call(config):
+            logger.debug("Daily API call limit reached, skipping spontaneous post")
+            continue
+
+        context = session_mgr.get_spontaneous_context()
+        comment = await brain.generate_spontaneous_topic(context)
+        session_mgr.record_api_call()
+
+        if comment:
+            try:
+                await app.client.chat_postMessage(
+                    channel=config.bot_channel_id,
+                    text=comment,
+                )
+                session_mgr.record_spontaneous_post()
+                logger.info("Posted spontaneous topic to bot channel")
+            except Exception:
+                logger.exception("Failed to post spontaneous topic")
 
 
 async def main() -> None:
@@ -89,6 +136,9 @@ async def main() -> None:
 
     # Start periodic response task
     asyncio.create_task(periodic_response(app, session_mgr, brain, config))
+
+    # Start spontaneous posting task
+    asyncio.create_task(spontaneous_posting(app, session_mgr, brain, config))
 
     # Start Slack Socket Mode connection
     handler = AsyncSocketModeHandler(app, config.slack_app_token)
