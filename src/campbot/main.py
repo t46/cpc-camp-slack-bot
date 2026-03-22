@@ -9,7 +9,7 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
 from campbot.brain import Brain
 from campbot.config import BotConfig
-from campbot.persona import load_persona
+from campbot.persona import Persona, load_persona
 from campbot.session import SessionManager
 from campbot.slack_app import create_slack_app, register_handlers, safe_post
 
@@ -26,12 +26,14 @@ async def periodic_response(
     session_mgr: SessionManager,
     brain: Brain,
     config: BotConfig,
+    persona: Persona,
 ) -> None:
     """Periodically generate and post comments."""
     # Random initial delay (0-60s) to stagger multiple bots
     initial_delay = random.uniform(0, 60)
     logger.info(
-        "Periodic response task started (interval=%ds, initial_delay=%.0fs)",
+        "[%s] Periodic response task started (interval=%ds, initial_delay=%.0fs)",
+        persona.name,
         config.response_interval_seconds,
         initial_delay,
     )
@@ -49,21 +51,30 @@ async def periodic_response(
         if not session_mgr.current_session:
             continue
 
-        if not session_mgr.has_enough_new_context():
-            logger.debug("Not enough new context, skipping")
+        if not session_mgr.has_enough_new_context(persona_name=persona.name):
+            logger.debug("[%s] Not enough new context, skipping", persona.name)
             continue
 
-        context = session_mgr.get_context_for_prompt()
+        context = session_mgr.get_context_for_prompt(persona_name=persona.name)
         comment = await brain.generate_comment(context)
 
         if comment:
             try:
-                await safe_post(app.client, config, comment)
-                session_mgr.current_session.last_bot_post_at = datetime.now()
+                thread_ts = session_mgr.pick_thread_target(persona.name, config)
+                await safe_post(
+                    app.client, config, comment,
+                    persona=persona, thread_ts=thread_ts,
+                )
+                now = datetime.now()
+                session_mgr.current_session.last_bot_post_at = now
+                session_mgr.current_session._persona_last_post_at[persona.name] = now
                 session_mgr.record_api_call()
-                logger.info("Posted comment to bot channel")
+                if thread_ts:
+                    logger.info("[%s] Posted comment to bot channel (thread)", persona.name)
+                else:
+                    logger.info("[%s] Posted comment to bot channel", persona.name)
             except Exception:
-                logger.exception("Failed to post comment")
+                logger.exception("[%s] Failed to post comment", persona.name)
 
 
 async def spontaneous_posting(
@@ -71,10 +82,15 @@ async def spontaneous_posting(
     session_mgr: SessionManager,
     brain: Brain,
     config: BotConfig,
+    persona: Persona,
 ) -> None:
     """Periodically generate spontaneous topics even without a session."""
     initial_delay = random.uniform(60, 180)
-    logger.info("Spontaneous posting task started (interval=%ds)", config.spontaneous_interval_seconds)
+    logger.info(
+        "[%s] Spontaneous posting task started (interval=%ds)",
+        persona.name,
+        config.spontaneous_interval_seconds,
+    )
     await asyncio.sleep(initial_delay)
     while True:
         jitter = random.uniform(-300, 300)
@@ -88,7 +104,7 @@ async def spontaneous_posting(
             continue
 
         if not session_mgr.can_make_api_call(config):
-            logger.debug("Daily API call limit reached, skipping spontaneous post")
+            logger.debug("[%s] Daily API call limit reached, skipping", persona.name)
             continue
 
         context = session_mgr.get_spontaneous_context()
@@ -97,24 +113,39 @@ async def spontaneous_posting(
 
         if comment:
             try:
-                await safe_post(app.client, config, comment)
+                await safe_post(app.client, config, comment, persona=persona)
                 session_mgr.record_spontaneous_post()
-                logger.info("Posted spontaneous topic to bot channel")
+                logger.info("[%s] Posted spontaneous topic", persona.name)
             except Exception:
-                logger.exception("Failed to post spontaneous topic")
+                logger.exception("[%s] Failed to post spontaneous topic", persona.name)
+
+
+def load_personas(config: BotConfig) -> list[Persona]:
+    """Load personas from config. Uses persona_files if set, otherwise persona_file."""
+    if config.persona_files:
+        paths = [p.strip() for p in config.persona_files.split(",") if p.strip()]
+    else:
+        paths = [config.persona_file]
+    return [load_persona(p) for p in paths]
 
 
 async def main() -> None:
     """Entry point for the camp bot."""
     config = BotConfig()
-    persona = load_persona(config.persona_file)
-    logger.info("Loaded persona: %s (%s)", persona.name, persona.style)
+    personas = load_personas(config)
+
+    for p in personas:
+        logger.info("Loaded persona: %s (%s)", p.name, p.style)
 
     app = create_slack_app(config)
     session_mgr = SessionManager()
-    brain = Brain(config, persona)
+    persona_names = {p.name for p in personas}
 
-    register_handlers(app, session_mgr, brain, config)
+    # Create a Brain for each persona
+    brains = [Brain(config, persona) for persona in personas]
+
+    # Register Slack event handlers (once, shared)
+    register_handlers(app, session_mgr, config, persona_names=persona_names)
 
     # Start audio capture if enabled
     if config.enable_audio:
@@ -128,15 +159,15 @@ async def main() -> None:
         asyncio.create_task(transcriber.start(on_transcript))
         logger.info("Audio capture enabled (device=%s)", config.audio_device or "default")
 
-    # Start periodic response task
-    asyncio.create_task(periodic_response(app, session_mgr, brain, config))
-
-    # Start spontaneous posting task
-    asyncio.create_task(spontaneous_posting(app, session_mgr, brain, config))
+    # Start periodic response and spontaneous posting tasks for each persona
+    for brain, persona in zip(brains, personas):
+        asyncio.create_task(periodic_response(app, session_mgr, brain, config, persona))
+        asyncio.create_task(spontaneous_posting(app, session_mgr, brain, config, persona))
 
     # Start Slack Socket Mode connection
     handler = AsyncSocketModeHandler(app, config.slack_app_token)
-    logger.info("Starting bot: %s", persona.name)
+    names = ", ".join(p.name for p in personas)
+    logger.info("Starting bot(s): %s", names)
     await handler.start_async()
 
 

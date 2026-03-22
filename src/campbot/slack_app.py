@@ -17,17 +17,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Module-level persona reference, set by register_handlers
-_persona: Persona | None = None
 
-
-async def safe_post(client, config: BotConfig, text: str) -> None:
-    """Post a message only to the bot channel. All writes go through here."""
+async def safe_post(
+    client,
+    config: BotConfig,
+    text: str,
+    persona: Persona | None = None,
+    thread_ts: str = "",
+) -> str:
+    """Post a message only to the bot channel. Returns the posted message ts."""
     kwargs: dict = {"channel": config.bot_channel_id, "text": text}
-    if _persona:
-        kwargs["username"] = _persona.name
-        kwargs["icon_emoji"] = _persona.avatar_emoji
-    await client.chat_postMessage(**kwargs)
+    if persona:
+        kwargs["username"] = persona.name
+        kwargs["icon_emoji"] = persona.avatar_emoji
+    if thread_ts:
+        kwargs["thread_ts"] = thread_ts
+    result = await client.chat_postMessage(**kwargs)
+    return result.get("ts", "")
 
 
 def create_slack_app(config: BotConfig) -> AsyncApp:
@@ -39,14 +45,19 @@ def create_slack_app(config: BotConfig) -> AsyncApp:
 def register_handlers(
     app: AsyncApp,
     session_mgr: SessionManager,
-    brain: Brain,
     config: BotConfig,
+    persona_names: set[str] | None = None,
 ) -> None:
-    """Register all Slack event handlers."""
-    global _persona
-    _persona = brain.persona
+    """Register all Slack event handlers.
 
-    # Track our own bot_id to ignore self-messages
+    Args:
+        persona_names: Names of personas running in this process.
+            Messages from our own bot_id with these usernames are tracked
+            as bot messages so other personas can see them.
+    """
+    own_persona_names = persona_names or set()
+
+    # Track our own bot_id to identify self-messages
     _self_bot_id: str | None = None
 
     @app.event("message")
@@ -111,19 +122,22 @@ def register_handlers(
                 elif filetype == "vtt" or filename.endswith(".vtt"):
                     await _handle_vtt(file_info, client, session_mgr)
 
-            # Track bot messages from OTHER bots (ignore our own)
-            if bot_id and bot_id != _self_bot_id:
+            # Track bot messages (both from other bots AND our own personas)
+            if bot_id:
                 from datetime import datetime
 
+                username = event.get("username", bot_id)
                 msg = Message(
-                    user=event.get("username", bot_id),
+                    user=username,
                     text=text,
                     timestamp=datetime.fromtimestamp(float(ts)) if ts else datetime.now(),
                     is_bot=True,
+                    slack_ts=ts,
+                    thread_ts=event.get("thread_ts", ""),
                 )
                 session_mgr.add_bot_message(msg)
                 session_mgr.add_channel_message(msg)
-                logger.info("Other bot message from %s: %s", msg.user, text[:50])
+                logger.info("Bot message from %s: %s", username, text[:50])
 
             # Track all bot channel messages for spontaneous context
             if not bot_id and not text.startswith("!"):
@@ -134,6 +148,8 @@ def register_handlers(
                     text=text,
                     timestamp=datetime.fromtimestamp(float(ts)) if ts else datetime.now(),
                     is_bot=False,
+                    slack_ts=ts,
+                    thread_ts=event.get("thread_ts", ""),
                 )
                 session_mgr.add_channel_message(msg)
 

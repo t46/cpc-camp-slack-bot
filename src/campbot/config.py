@@ -11,6 +11,7 @@ class BotConfig(BaseSettings):
     anthropic_api_key: str
     bot_channel_id: str
     persona_file: str = "personas/ada.md"
+    persona_files: str = ""  # Comma-separated list for multi-persona mode
     model_name: str = "claude-sonnet-4-20250514"
     response_interval_seconds: int = 120
     enable_audio: bool = False
@@ -22,5 +23,8 @@ class BotConfig(BaseSettings):
     spontaneous_interval_seconds: int = 1800  # 30 minutes
     max_daily_spontaneous_posts: int = 10
     max_daily_api_calls: int = 200
+    thread_probability: float = 0.4
+    max_thread_replies: int = 5
+    thread_target_max_age_seconds: int = 300
 
     model_config = {"env_file": ".env", "extra": "ignore"}

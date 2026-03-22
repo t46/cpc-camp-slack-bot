@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import random
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -23,6 +24,8 @@ class Message:
     text: str
     timestamp: datetime
     is_bot: bool = False
+    slack_ts: str = ""
+    thread_ts: str = ""
 
 
 @dataclass
@@ -38,6 +41,9 @@ class Session:
     last_bot_post_at: datetime | None = None
     consecutive_bot_only_count: int = 0
     _last_context_hash: str = field(default="", repr=False)
+    # Per-persona tracking for multi-persona mode
+    _persona_last_post_at: dict[str, datetime] = field(default_factory=dict, repr=False)
+    _persona_context_hash: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 class SessionManager:
@@ -117,8 +123,12 @@ class SessionManager:
         self.channel_history.append(msg)
         self.channel_history = self.channel_history[-50:]
 
-    def has_enough_new_context(self) -> bool:
-        """Check if there's enough new context since the last bot post to warrant a response."""
+    def has_enough_new_context(self, persona_name: str = "") -> bool:
+        """Check if there's enough new context since the last bot post to warrant a response.
+
+        Args:
+            persona_name: If provided, uses per-persona tracking instead of shared state.
+        """
         session = self.current_session
         if not session:
             return False
@@ -133,11 +143,23 @@ class SessionManager:
         # Check if context has changed since last response (skip in free mode)
         if not is_free:
             current_hash = self._compute_context_hash(session)
-            if current_hash == session._last_context_hash:
+            last_hash = (
+                session._persona_context_hash.get(persona_name, "")
+                if persona_name
+                else session._last_context_hash
+            )
+            if current_hash == last_hash:
                 return False
 
+        # Get the last post time for this persona
+        last_post_at = (
+            session._persona_last_post_at.get(persona_name)
+            if persona_name
+            else session.last_bot_post_at
+        )
+
         # If never posted, post if we have some content
-        if session.last_bot_post_at is None:
+        if last_post_at is None:
             if is_free:
                 return True
             return len(session.transcript_chunks) >= 3 or len(session.slide_texts) > 0
@@ -160,21 +182,25 @@ class SessionManager:
         # Count new content since last post
         new_chunks = [
             c for c in session.transcript_chunks
-            if c.timestamp > session.last_bot_post_at
+            if c.timestamp > last_post_at
         ]
         new_discussion = [
             m for m in session.discussion_messages
-            if m.timestamp > session.last_bot_post_at
+            if m.timestamp > last_post_at
         ]
         new_bot_msgs = [
             m for m in session.bot_messages
-            if m.timestamp > session.last_bot_post_at
+            if m.timestamp > last_post_at
         ]
         # Respond if: new transcript, new discussion, or other bots said something
         return len(new_chunks) >= 3 or len(new_discussion) >= 1 or len(new_bot_msgs) >= 1
 
-    def get_context_for_prompt(self) -> str:
-        """Assemble context string for the Claude API prompt."""
+    def get_context_for_prompt(self, persona_name: str = "") -> str:
+        """Assemble context string for the Claude API prompt.
+
+        Args:
+            persona_name: If provided, updates per-persona hash instead of shared state.
+        """
         session = self.current_session
         if not session:
             return ""
@@ -209,12 +235,15 @@ class SessionManager:
                 parts.append(f"{prefix}{msg.user}: {msg.text}")
             parts.append("")
 
-        # Bot channel messages (last 15)
+        # Bot channel messages (last 15), showing thread structure
         if session.bot_messages:
             recent_bot = session.bot_messages[-15:]
             parts.append(f"## bot チャンネルの議論（最新{len(recent_bot)}件）")
             for msg in recent_bot:
-                parts.append(f"{msg.user}: {msg.text}")
+                if msg.thread_ts:
+                    parts.append(f"  ↳ {msg.user}: {msg.text}")
+                else:
+                    parts.append(f"{msg.user}: {msg.text}")
             parts.append("")
 
         # Consecutive bot count guidance
@@ -241,10 +270,50 @@ class SessionManager:
                 "言うべきことが特にない場合は「SKIP」とだけ返してください。"
             )
 
-        # Update hash
+        # Update hash (per-persona or shared)
         context = "\n".join(parts)
-        session._last_context_hash = self._compute_context_hash(session)
+        new_hash = self._compute_context_hash(session)
+        if persona_name:
+            session._persona_context_hash[persona_name] = new_hash
+        else:
+            session._last_context_hash = new_hash
         return context
+
+    def pick_thread_target(self, persona_name: str, config: BotConfig) -> str:
+        """Pick a recent bot message to thread into, or return empty for top-level.
+
+        Only threads into messages from OTHER personas, within the age window,
+        with fewer than max replies, and with configurable probability.
+        """
+        session = self.current_session
+        if not session or not session.bot_messages:
+            return ""
+
+        if random.random() >= config.thread_probability:
+            return ""
+
+        now = datetime.now()
+        max_age = config.thread_target_max_age_seconds
+
+        # Find top-level bot messages from other personas within age window
+        candidates: list[Message] = []
+        for msg in reversed(session.bot_messages):
+            age = (now - msg.timestamp).total_seconds()
+            if age > max_age:
+                break
+            if msg.user != persona_name and msg.is_bot and not msg.thread_ts and msg.slack_ts:
+                # Count existing thread replies
+                reply_count = sum(
+                    1 for m in session.bot_messages if m.thread_ts == msg.slack_ts
+                )
+                if reply_count < config.max_thread_replies:
+                    candidates.append(msg)
+
+        if not candidates:
+            return ""
+
+        # Pick the most recent candidate
+        return candidates[0].slack_ts
 
     def has_spontaneous_opportunity(self, config: BotConfig) -> bool:
         """Check if conditions allow a spontaneous post."""
